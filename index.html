@@ -5,26 +5,145 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>LIVE — دوربین</title>
 <style>
-  html,body{margin:0;padding:0;height:100%;background:#0b0f14;overflow:hidden}
-  #frame{width:100%;height:100%;border:0;display:block;background:#0b0f14}
-  #fallback{position:fixed;bottom:0;left:0;right:0;padding:8px;background:rgba(0,0,0,.7);
-    font-family:Tahoma,sans-serif;font-size:12px;color:#8fa3b8;text-align:center;display:none}
-  #fallback a{color:#7dd3fc}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0b0f14;color:#e6eef8;font-family:system-ui,Tahoma;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:12px}
+  h1{font-size:15px;margin-bottom:8px;font-weight:600;white-space:nowrap}
+  #wrap{position:relative;width:min(720px,95vw);background:#111a24;border-radius:14px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+  #live{width:100%;height:auto;display:block;background:#0a0e13;min-height:280px;object-fit:contain}
+  #overlay{position:absolute;inset:auto 8px 8px auto;background:rgba(0,0,0,.5);backdrop-filter:blur(6px);padding:5px 9px;border-radius:9px;font-size:12px;line-height:1.7}
+  #overlay b{color:#7dd3fc}
+  #status{margin-top:9px;font-size:12px;line-height:1.7;opacity:.75;text-align:center;max-width:720px;word-break:break-all}
+  .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e;margin-left:5px;animation:pulse 1.1s infinite}
+  .off-dot{background:#ef4444;box-shadow:0 0 8px #ef4444;animation:none}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 </style>
 </head>
 <body>
-<!-- پوسته: موتور زنده روی CDN بله اجرا می‌شود (same-origin با API بله، بدون CORS) -->
-<iframe id="frame" src="https://tapi.bale.ai/file/bot991108162:zmyDyIMBOEnSlTZw2IGlkDhm47J-EGxwbe4/874917999:-216078290082390269:1:85d4dcb808564234d67eefb826c94052"></iframe>
-<div id="fallback">اگر تصویر نیامد، <a href="https://tapi.bale.ai/file/bot991108162:zmyDyIMBOEnSlTZw2IGlkDhm47J-EGxwbe4/874917999:-216078290082390269:1:85d4dcb808564234d67eefb826c94052">موتور را مستقیم باز کنید</a></div>
+<h1><span id="dot" class="live-dot"></span> پخش زنده — از طریق بله</h1>
+<div id="wrap">
+  <img id="live" alt="live">
+  <div id="overlay">
+    فریم: <b id="seq">—</b> | دانلود: <b id="lat">—</b>ms<br>
+    نرخ: <b id="fps">—</b> fps | عمر فریم: <b id="age">—</b>s
+  </div>
+</div>
+<div id="status">در حال اتصال...</div>
+
 <script>
-var t0 = Date.now();
-setTimeout(function () {
-  // اگر تا ۸ ثانیه هیچ پیامی از موتور نرسید، لینک جایگزین را نشان بده
-  if (!window.__engine_alive) document.getElementById('fallback').style.display = 'block';
-}, 8000);
-window.addEventListener('message', function (e) {
-  if (e.data && e.data.type === 'engine-alive') window.__engine_alive = true;
-});
+// =====================================================================
+// معماری نهایی (همه قطعات تست‌شده):
+//   روتر: DVR -> sendPhoto(کانال بله) -> getFile -> pointer.js روی گیت‌هاب
+//   این صفحه: pointer را از دو مسیر می‌خواند:
+//     سریع: raw.githubusercontent.com هر ۱ثانیه (ACAO:*، بدون محدودیت)
+//     تضمینی: api.github.com هر ۶۲ثانیه (ACAO:*، همیشه تازه)
+//   فریم با <img> از CDN بله — عکس‌ها هیچ CORSی لازم ندارند
+// =====================================================================
+
+var CONFIG = {
+  BALE_TOKEN: '991108162:zmyDyIMBOEnSlTZw2IGlkDhm47J-EGxwbe4',
+  GITHUB_OWNER: 'ghanavati27',
+  GITHUB_REPO: 'bale-live',
+  GITHUB_BRANCH: 'live',
+  FAST_MS: 1000,
+  SLOW_MS: 62000
+};
+
+var FILE_BASE = 'https://tapi.bale.ai/file/bot' + CONFIG.BALE_TOKEN + '/';
+var FAST_URL = 'https://raw.githubusercontent.com/' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO + '/' + CONFIG.GITHUB_BRANCH + '/pointer.js';
+var SLOW_URL = 'https://api.github.com/repos/' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO + '/contents/pointer.js?ref=' + CONFIG.GITHUB_BRANCH;
+
+var img = document.getElementById('live');
+var seqEl = document.getElementById('seq');
+var latEl = document.getElementById('lat');
+var fpsEl = document.getElementById('fps');
+var ageEl = document.getElementById('age');
+var statusEl = document.getElementById('status');
+var dotEl = document.getElementById('dot');
+
+var lastFilePath = null;
+var lastShownTs = 0;
+var frameCount = 0;
+var fpsWindowStart = performance.now();
+var seq = 0;
+
+function setStatus(txt, isError) {
+  statusEl.textContent = txt;
+  dotEl.className = isError ? 'off-dot' : 'live-dot';
+}
+
+function tryShow(path) {
+  if (path && path !== lastFilePath && path !== 'INIT') showFrame(path);
+}
+
+// ---------- مسیر سریع: fetch از raw (ACAO:*) ----------
+function loadFast() {
+  fetch(FAST_URL + '?t=' + Date.now() + '_' + Math.floor(Math.random() * 1e6), { cache: 'no-store' })
+    .then(function (r) { return r.text(); })
+    .then(function (t) {
+      var m = t.match(/window\.__PTR=(\{.*\});/);
+      if (m) {
+        tryShow(JSON.parse(m[1]).path);
+        setStatus('متصل — پول سریع');
+      }
+    })
+    .catch(function () { /* مسیر کند ادامه می‌دهد */ });
+  setTimeout(loadFast, CONFIG.FAST_MS);
+}
+
+// ---------- مسیر تضمینی: api.github.com هر ۶۲ ثانیه ----------
+async function loadSlow() {
+  try {
+    var r = await fetch(SLOW_URL, { cache: 'no-store' });
+    if (r.ok) {
+      var j = await r.json();
+      if (j.content) {
+        var text = atob(j.content.replace(/\s/g, ''));
+        var m = text.match(/window\.__PTR=(\{.*\});/);
+        if (m) {
+          tryShow(JSON.parse(m[1]).path);
+          setStatus('متصل — پول API');
+        }
+      }
+    }
+  } catch (e) {
+    setStatus('خطا: ' + e.message + ' — ادامه با آخرین فریم', true);
+  }
+  setTimeout(loadSlow, CONFIG.SLOW_MS);
+}
+
+function showFrame(filePath) {
+  lastFilePath = filePath;
+  seq++;
+  var t0 = performance.now();
+  img.src = FILE_BASE + filePath + '?t=' + Date.now();
+  img.onload = function () {
+    lastShownTs = Date.now();
+    latEl.textContent = Math.round(performance.now() - t0);
+    seqEl.textContent = seq;
+    frameCount++;
+    var now = performance.now();
+    if (now - fpsWindowStart > 1000) {
+      fpsEl.textContent = (frameCount * 1000 / (now - fpsWindowStart)).toFixed(1);
+      frameCount = 0;
+      fpsWindowStart = now;
+    }
+  };
+  img.onerror = function () {
+    setStatus('خطا در نمایش فریم — تلاش دوباره...', true);
+  };
+}
+
+function checkStale() {
+  if (lastShownTs) {
+    var age = Math.round((Date.now() - lastShownTs) / 1000);
+    ageEl.textContent = age;
+    if (age > 10) setStatus('قطع موقت — آخرین فریم ' + age + ' ثانیه پیش', true);
+  }
+}
+
+setInterval(checkStale, 1000);
+loadFast();
+loadSlow();
 </script>
 </body>
 </html>
