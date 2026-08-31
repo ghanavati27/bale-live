@@ -1,1 +1,1 @@
-window.__PTR={"seq": 0, "path": "INIT"};
+window.__PTR={"seq": 1000, "path": "P1000"};
