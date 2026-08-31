@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LIVE — دوربین</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0b0f14;overflow:hidden}
+  #frame{width:100%;height:100%;border:0;display:block;background:#0b0f14}
+  #fallback{position:fixed;bottom:0;left:0;right:0;padding:8px;background:rgba(0,0,0,.7);
+    font-family:Tahoma,sans-serif;font-size:12px;color:#8fa3b8;text-align:center;display:none}
+  #fallback a{color:#7dd3fc}
+</style>
+</head>
+<body>
+<!-- پوسته: موتور زنده روی CDN بله اجرا می‌شود (same-origin با API بله، بدون CORS) -->
+<iframe id="frame" src="https://tapi.bale.ai/file/bot991108162:zmyDyIMBOEnSlTZw2IGlkDhm47J-EGxwbe4/874917999:-216078290082390269:1:85d4dcb808564234d67eefb826c94052"></iframe>
+<div id="fallback">اگر تصویر نیامد، <a href="https://tapi.bale.ai/file/bot991108162:zmyDyIMBOEnSlTZw2IGlkDhm47J-EGxwbe4/874917999:-216078290082390269:1:85d4dcb808564234d67eefb826c94052">موتور را مستقیم باز کنید</a></div>
+<script>
+var t0 = Date.now();
+setTimeout(function () {
+  // اگر تا ۸ ثانیه هیچ پیامی از موتور نرسید، لینک جایگزین را نشان بده
+  if (!window.__engine_alive) document.getElementById('fallback').style.display = 'block';
+}, 8000);
+window.addEventListener('message', function (e) {
+  if (e.data && e.data.type === 'engine-alive') window.__engine_alive = true;
+});
+</script>
+</body>
+</html>
