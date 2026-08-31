@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LIVE — دوربین</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,Tahoma;background:#0b0f14;color:#e6eef8;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:12px}
+  h1{font-size:15px;margin-bottom:8px;font-weight:600;white-space:nowrap}
+  #wrap{position:relative;width:min(720px,95vw);background:#111a24;border-radius:14px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+  #live{width:100%;height:auto;display:block;background:#0a0e13;min-height:280px;object-fit:contain}
+  #overlay{position:absolute;inset:auto 8px 8px auto;background:rgba(0,0,0,.5);backdrop-filter:blur(6px);padding:5px 9px;border-radius:9px;font-size:12px;line-height:1.7}
+  #overlay b{color:#7dd3fc}
+  #status{margin-top:9px;font-size:12px;line-height:1.7;opacity:.75;text-align:center;max-width:720px;word-break:break-all}
+  .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e;margin-left:5px;animation:pulse 1.1s infinite}
+  .off-dot{background:#ef4444;box-shadow:0 0 8px #ef4444;animation:none}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+</style>
+</head>
+<body>
+<h1><span id="dot" class="live-dot"></span> پخش زنده — از طریق بله</h1>
+<div id="wrap">
+  <img id="live" alt="live">
+  <div id="overlay">
+    فریم: <b id="seq">—</b> | دانلود: <b id="lat">—</b>ms<br>
+    نرخ: <b id="fps">—</b> fps | عمر فریم: <b id="age">—</b>s
+  </div>
+</div>
+<div id="status">در حال اتصال...</div>
+
+<script>
+// =====================================================================
+// صفحه پوستهی پخش زنده — روی GitHub Pages (https://ghanavati27.github.io/bale-live/)
+// فریمها از CDN بله (tapi.bale.ai) دریافت میشوند؛ این صفحه فقط «پوسته» است.
+//
+// روش کار:
+//   روتر هر فریم را با sendPhoto به کانال DVR میفرستد.
+//   این صفحه با long-poll getUpdates (= در بله ۶ ثانیه نیست؛ بیدارشونده است) 
+//   آخرین عکسِ کانال را میگیرد و نمایش میدهد.
+//   (در بله: offset=-1 خالی است؛ پس با limit=100 بدون offset صف را میخوانیم —
+//    فیکس این نسخه نسبت به نسخهی قبلی که به همین خاطر قفل میکرد.)
+//
+// ⚠️ فقط مقادیر `CONFIG` را از اسکریپت روتر کپی کن — بقیه را ول کن.
+// =====================================================================
+
+var CONFIG = {
+  BALE_TOKEN: '991108162:zmyDyIMBOEnSlTZw2IGlkDhm47J-EGxwbe4',
+  CHANNEL_ID: 5169885295
+};
+
+var API = 'https://tapi.bale.ai/bot' + CONFIG.BALE_TOKEN;
+var FILE_BASE = 'https://tapi.bale.ai/file/bot' + CONFIG.BALE_TOKEN + '/';
+
+var img = document.getElementById('live');
+var seqEl, latEl, fpsEl, ageEl, statusEl, dotEl;
+seqEl = document.getElementById('seq');
+latEl = document.getElementById('lat');
+fpsEl = document.getElementById('fps');
+ageEl = document.getElementById('age');
+statusEl = document.getElementById('status');
+dotEl = document.getElementById('dot');
+
+var lastUpdateId = 0;
+var lastFilePath = null;
+var lastShownTs = 0;
+var frameCount = 0;
+var fpsWindowStart = performance.now();
+var seq = 0;
+
+function setStatus(txt, isError) {
+  statusEl.textContent = txt;
+  dotEl.className = isError ? 'off-dot' : 'live-dot';
+}
+
+// خواندن آخرین update_id (بله: offset=-1 خالی است، پس اینگونه)
+async function peekLatestUpdateId() {
+  try {
+    var r = await fetch(API + '/getUpdates?limit=100', { cache: 'no-store' });
+    var j = await r.json();
+    if (j.ok && j.result && j.result.length) {
+      var max = 0;
+      for (var i = 0; i < j.result.length; i++) {
+        if (j.result[i].update_id > max) max = j.result[i].update_id;
+      }
+      lastUpdateId = max;
+      setStatus('متصل — صف آپدیتها خوانده شد (' + j.result.length + ' آپدیت)');
+    }
+  } catch (e) {
+    setStatus('خطا در خواندن صف: ' + e.message, true);
+  }
+}
+
+// long-poll: بله با timeout=25 واقعاً منتظر میماند و با آمدن فریم بیدار میشود (تستشده)
+async function poll() {
+  try {
+    var url = API + '/getUpdates?offset=' + (lastUpdateId + 1) + '&limit=50&timeout=25';
+    var r = await fetch(url, { cache: 'no-store' });
+    var j = await r.json();
+    if (!j.ok) throw new Error(j.description || 'getUpdates failed');
+
+    var fresh = null;
+    if (j.result && j.result.length) {
+      for (var i = 0; i < j.result.length; i++) {
+        var u = j.result[i];
+        if (u.update_id > lastUpdateId) lastUpdateId = u.update_id;
+        var m = u.message || u.channel_post;
+        if (m && m.photo && m.photo.length && Number(m.chat && m.chat.id) === CONFIG.CHANNEL_ID) {
+          fresh = m.photo[m.photo.length - 1].file_id;
+        }
+      }
+    }
+
+    if (fresh) {
+      await showFrame(fresh);
+      setStatus('متصل — دریافت آخرین فریم');
+    } else {
+      checkStale();
+    }
+  } catch (e) {
+    setStatus('خطا: ' + e.message + ' — تلاش دوباره...', true);
+  }
+  setTimeout(poll, 250);
+}
+
+async function showFrame(fileId) {
+  var g = await fetch(API + '/getFile?file_id=' + encodeURIComponent(fileId));
+  var jg = await g.json();
+  if (!jg.ok || !jg.result || !jg.result.file_path) return;
+
+  var fp = jg.result.file_path;
+  if (fp === lastFilePath) return;
+
+  lastFilePath = fp;
+  seq++;
+  var t0 = performance.now();
+  var url = FILE_BASE + fp + '?t=' + Date.now();
+  img.src = url;
+  img.onload = function () {
+    lastShownTs = Date.now();
+    latEl.textContent = Math.round(performance.now() - t0);
+    seqEl.textContent = seq;
+    frameCount++;
+    var now = performance.now();
+    if (now - fpsWindowStart > 1000) {
+      fpsEl.textContent = (frameCount * 1000 / (now - fpsWindowStart)).toFixed(1);
+      frameCount = 0;
+      fpsWindowStart = now;
+    }
+  };
+  img.onerror = function () {
+    setStatus('خطا در نمایش فریم — تلاش دوباره...', true);
+  };
+}
+
+function checkStale() {
+  if (lastShownTs) {
+    var age = Math.round((Date.now() - lastShownTs) / 1000);
+    ageEl.textContent = age;
+    if (age > 5) setStatus('قطع موقت — آخرین فریم ' + age + ' ثانیه پیش', true);
+  }
+}
+
+setInterval(checkStale, 1000);
+
+(async function () {
+  await peekLatestUpdateId();
+  poll();
+})();
+</script>
+</body>
+</html>
